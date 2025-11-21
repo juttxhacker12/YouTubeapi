@@ -3,128 +3,92 @@ export default {
     const url = new URL(request.url);
     const inputUrl = url.searchParams.get('url');
 
-    // Validate URL
-    if (!inputUrl || !inputUrl.includes("youtube.com") && !inputUrl.includes("youtu.be")) {
+    if (!inputUrl || (!inputUrl.includes("youtube.com") && !inputUrl.includes("youtu.be"))) {
       return new Response(JSON.stringify({
         status: "error",
-        message: "Invalid or missing YouTube URL"
-      }, null, 2), { status: 400 });
+        message: "Invalid YouTube URL"
+      }), { status: 400 });
     }
 
-    // 3rd-party YouTube downloader APIs
+    // YouTube video ID extract
+    const vid = inputUrl.match(/(v=|youtu.be\/)([a-zA-Z0-9_-]+)/);
+    if (!vid) {
+      return new Response(JSON.stringify({
+        status: "error",
+        message: "Could not detect video ID"
+      }), { status: 400 });
+    }
+
+    const videoId = vid[2];
+
+    // Active download servers
     const apis = [
-      {
-        name: "yt5s",
-        url: `https://yt5s.com/api/ajaxSearch/index`,
-        method: "POST",
-        body: `q=${encodeURIComponent(inputUrl)}&vt=home`,
-        headers: {
-          "content-type": "application/x-www-form-urlencoded; charset=UTF-8"
-        }
-      },
-      {
-        name: "savefrom",
-        url: `https://worker.savefrom.net/savefrom.php?url=${encodeURIComponent(inputUrl)}&v=1`,
-        method: "GET",
-        headers: {
-          "user-agent": "Mozilla/5.0"
-        }
-      },
-      {
-        name: "ytdlme",
-        url: `https://api.ytdlapi.me/info?url=${encodeURIComponent(inputUrl)}`,
-        method: "GET",
-      }
+      `https://pipedapi.kavin.rocks/streams/${videoId}`,
+      `https://inv.zzls.xyz/api/v1/videos/${videoId}`
     ];
 
-    let finalData = null;
+    let final = null;
 
-    // Try APIs one by one
     for (const api of apis) {
       try {
-        const options = {
-          method: api.method,
-          headers: api.headers || {}
-        };
-
-        if (api.method === "POST" && api.body) {
-          options.body = api.body;
-        }
-
-        const response = await fetch(api.url, options);
+        const response = await fetch(api, {
+          headers: { "User-Agent": "Mozilla/5.0" }
+        });
 
         if (!response.ok) continue;
 
-        let data = await response.json();
+        const data = await response.json();
 
-        // yt5s.com format
-        if (api.name === "yt5s" && data.links?.mp4) {
-          const vid = Object.values(data.links.mp4).pop();
+        // Piped format
+        if (data.videoStreams) {
+          const best = data.videoStreams
+            .filter(v => v.videoOnly === false)
+            .sort((a, b) => b.quality - a.quality)[0];
 
-          finalData = {
+          final = {
             title: data.title,
-            thumbnail: data.thumbnail,
-            quality: vid.q,
-            video: vid.dlink,
-            channel: data.author
-          };
-
-          break;
-        }
-
-        // savefrom.net format
-        if (api.name === "savefrom" && data.url?.length > 0) {
-          let best = data.url[0];
-
-          finalData = {
-            title: data.meta?.title,
-            thumbnail: data.meta?.img,
-            video: best.url,
+            thumbnail: data.thumbnailUrl,
+            channel: data.uploader,
             quality: best.quality,
-            channel: data.meta?.source
+            video: best.url
           };
-
           break;
         }
 
-        // ytdl.me format
-        if (api.name === "ytdlme" && data.formats?.length > 0) {
-          const hd = data.formats.find(x => x.quality.includes("720")) || data.formats[0];
+        // Invidious format
+        if (data.formatStreams) {
+          const best = data.formatStreams.sort((a, b) => b.size - a.size)[0];
 
-          finalData = {
+          final = {
             title: data.title,
-            thumbnail: data.thumbnail,
-            video: hd.url,
-            quality: hd.quality,
-            channel: data.author
+            thumbnail: data.videoThumbnails?.[0]?.url,
+            channel: data.author,
+            quality: best.qualityLabel || best.type,
+            video: best.url
           };
-
           break;
         }
 
       } catch (err) {
-        // Try next API
         continue;
       }
     }
 
-    if (finalData) {
+    if (!final) {
       return new Response(JSON.stringify({
-        status: "success",
-        ...finalData,
-        dev: "@MadadAliJuTt"
-      }, null, 2), {
-        headers: {
-          "Content-Type": "application/json",
-          "Access-Control-Allow-Origin": "*"
-        }
-      });
+        status: "error",
+        message: "All servers failed"
+      }), { status: 500 });
     }
 
     return new Response(JSON.stringify({
-      status: "error",
-      message: "All downloader APIs failed",
-      dev: "@MadadAliJuTt"
-    }, null, 2), { status: 500 });
+      status: "success",
+      ...final
+    }, null, 2), {
+      headers: {
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "*"
+      }
+    });
   }
 };
